@@ -77,14 +77,11 @@ jobs:
           QNN_SDK_BIN="$(dirname "$BIN_FILE")"
           echo "### QNN_SDK_BIN: $QNN_SDK_BIN ###" 
           echo "QNN_SDK_BIN=$QNN_SDK_BIN" >> $GITHUB_ENV
-
           sed -i 's|cd /data/qairt/2.28.0.241029/bin|cd "$QNN_SDK_BIN"|' "$NPUCONVERT_DIR/scripts/convert_all.sh"
-          if grep -q "^prompts\s*=" "$GITHUB_WORKSPACE/prompts.py"; then
-            echo "### Replacing prompts block in prepare_data.py ###"
-            PROMPTS_CONTENT=$(sed 's/[&/\]/\\&/g' "$GITHUB_WORKSPACE/prompts.py")
-            sed -i '/^prompts\s*=\s*\[/,/^]/c\'"$PROMPTS_CONTENT" "$NPUCONVERT_DIR/prepare_data.py"
-            echo "### Showing replaced prompts section in prepare_data.py ###"
-            sed -n '/^prompts\s*=\s*\[/,/^]/p' "$NPUCONVERT_DIR/prepare_data.py"
+          
+          if [ -f "$GITHUB_WORKSPACE/prepare_data.py" ]; then
+            echo "### Overriding prepare_data.py with custom version ###"
+            cp "$GITHUB_WORKSPACE/prepare_data.py" "$NPUCONVERT_DIR/prepare_data.py"
           else
             echo "### Skipping replacement ###"
           fi
