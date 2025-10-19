@@ -1,3 +1,21 @@
+import argparse
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--clip_skip", type=int, default=1)
+    parser.add_argument("--size", type=int, default=512)
+    return parser.parse_args()
+
+
+args = parse_args()
+safetensor_path = args.model_path
+clipskip = args.clip_skip
+size = args.size
+resolution = (size, size)
+
+# Please use at least 10 prompts, and the prompts should preferably use words related to the model's usage scenarios.
 prompts = [
     [
         "masterpiece,best quality,1girl,solo,long hair,looking at viewer,red eyes,bangs,shirt,blush,collarbone,white shirt,upper body,smile,closed mouth,hair between eyes,white hair,hair ornament,",
@@ -40,3 +58,142 @@ prompts = [
         "negative_hand, NegfeetV2, Realisian-Neg, worst quality, low quality, normal quality, poorly drawn, lowres, low resolution, signature, watermarks, ugly, out of focus, error, blurry, unclear photo, bad photo, unrealistic, semi realistic, pixelated, cartoon, anime, cgi, drawing, bra, panties, dress, shirt, clothes, small breast, medium breast, extra limbs, 2d, 3d, censored, girl, human, woman, human,",
     ],
 ]
+
+import torch
+import numpy as np
+from PIL import Image
+from diffusers import StableDiffusionPipeline
+from transformers import CLIPTokenizer
+from tqdm import tqdm
+import pickle as pkl
+from diffusers import (
+    StableDiffusionPipeline,
+    DPMSolverMultistepScheduler,
+    EulerAncestralDiscreteScheduler,
+)
+import os
+
+data = {"clip": [], "unet": [], "vae": []}
+
+pipe = StableDiffusionPipeline.from_single_file(
+    safetensor_path,
+    safety_checker=None,
+    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+)
+if clipskip > 1:
+    pipe.text_encoder.text_model.encoder.layers = (
+        pipe.text_encoder.text_model.encoder.layers[: -(clipskip - 1)]
+    )
+device = "cuda" if torch.cuda.is_available() else "cpu"
+pipe = pipe.to(device)
+
+pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+    pipe.scheduler.config,
+    algorithm_type="dpmsolver++",
+    solver_order=2,
+    solver_type="midpoint",
+    lower_order_final=True,
+    use_karras_sigmas=True,
+    beta_schedule="scaled_linear",
+)
+
+text_encoder = pipe.text_encoder
+unet = pipe.unet
+vae = pipe.vae
+tokenizer = pipe.tokenizer
+scheduler = pipe.scheduler
+
+idx = 0
+
+
+def generate(prompt, negative_prompt, cfg, steps):
+    global idx
+    idx += 1
+
+    width, height = resolution
+    num_inference_steps = steps
+    guidance_scale = cfg
+    num_images_per_prompt = 1
+    do_classifier_free_guidance = guidance_scale > 0
+
+    text_inputs = tokenizer(
+        [negative_prompt, prompt],
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+
+    text_input_ids = text_inputs.input_ids.to(device)
+
+    data["clip"].append([text_input_ids.cpu().numpy()])
+
+    with torch.no_grad():
+        prompt_embeds = text_encoder(text_input_ids)[0]
+
+    num_channels_latents = unet.config.in_channels
+    latents_shape = (
+        num_images_per_prompt,
+        num_channels_latents,
+        height // 8,
+        width // 8,
+    )
+
+    latents = torch.randn(latents_shape, device=device, dtype=prompt_embeds.dtype)
+
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    latents = latents * scheduler.init_noise_sigma
+
+    for i, t in tqdm(enumerate(scheduler.timesteps)):
+        latent_model_input = (
+            torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+        )
+        latent_model_input = scheduler.scale_model_input(latent_model_input, t)
+        data["unet"].append(
+            [
+                latent_model_input.cpu().numpy(),
+                t.cpu().numpy() if hasattr(t, "cpu") else np.array([t]),
+                prompt_embeds.cpu().numpy(),
+            ]
+        )
+        with torch.no_grad():
+            noise_pred = unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embeds,
+            ).sample
+
+        if do_classifier_free_guidance:
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (
+                noise_pred_text - noise_pred_uncond
+            )
+        scheduler_output = scheduler.step(noise_pred, t, latents)
+        latents = scheduler_output.prev_sample
+
+    latents = 1 / vae.config.scaling_factor * latents
+
+    data["vae"].append([latents.cpu().numpy()])
+
+    with torch.no_grad():
+        image = vae.decode(latents).sample
+
+    image = (image / 2 + 0.5).clamp(0, 1)
+    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    image = (image * 255).round().astype("uint8")
+    image = image[0]
+
+    pil_image = Image.fromarray(image)
+
+    os.makedirs("images", exist_ok=True)
+    pil_image.save(f"images/{idx}.png")
+    print(f"image saved images/{idx}.png")
+
+
+for prompt, negative_prompt in prompts:
+    for cfg in [7]:
+        print(prompt, negative_prompt, cfg, 28 - idx % 9)
+        generate(prompt, negative_prompt, cfg, 28 - idx % 9)
+
+with open("data.pkl", "wb") as f:
+    pkl.dump(data, f)
