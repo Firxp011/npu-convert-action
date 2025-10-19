@@ -75,9 +75,11 @@ jobs:
 
       - name: Download QNN SDK v2.28.0.241029
         run: |
-          mkdir -p $GITHUB_WORKSPACE/qnn_sdk && cd $GITHUB_WORKSPACE/qnn_sdk
-          curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip" || true
-          unzip -q qnn.zip || true
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/qnn_sdk"
+          cd "$GITHUB_WORKSPACE/qnn_sdk"
+          curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip"
+          unzip -q qnn.zip
           
       - name: Fix npuconvert path and customize
         run: |
