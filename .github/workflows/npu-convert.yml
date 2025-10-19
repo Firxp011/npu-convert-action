@@ -27,7 +27,7 @@ on:
 
 jobs:
   convert:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     steps:
       - name: Checkout (with LFS)
@@ -116,12 +116,21 @@ jobs:
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
           python prepare_data.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
-          echo "### Sample preview images ###" >> $GITHUB_STEP_SUMMARY
-          for img in "${{ env.NPUCONVERT_DIR }}"/images/*.png; do
-            [ -e "$img" ] || continue
-            b64=$(base64 -w0 "$img")
-            echo "<img src=\"data:image/png;base64,$b64\" width=\"160\" style=\"margin:4px\" />" >> $GITHUB_STEP_SUMMARY
-          done
+
+      - name: Upload preview images
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-images
+          path: ${{ env.NPUCONVERT_DIR }}/images/*.png
+          if-no-files-found: ignore
+      
+      - name: Add note to summary
+        run: |
+          {
+            echo "### Sample preview images ###"
+            echo "- Images uploaded as an artifact: **preview-images**"
+            echo "- Download from the *Artifacts* section of this workflow run."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run (2) gen_quant_data.py
         run: |
