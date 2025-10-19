@@ -24,6 +24,16 @@ on:
         default: "8gen2"
         type: choice
         options: ["min", "8gen1", "8gen2"]
+      reuse_preview_run_id:
+        description: "Reuse preview-images artifact from this run-id (leave empty to regenerate)"
+        required: false
+        default: ""
+        type: string
+      reuse_preview_artifact_name:
+        description: "Artifact name to reuse (usually 'preview-images')"
+        required: false
+        default: "preview-images"
+        type: string
 
 jobs:
   convert:
@@ -102,6 +112,27 @@ jobs:
             echo "### Skipping replacement ###"
           fi
 
+      - name: (Optional) Download preview from previous run artifact
+        if: ${{ inputs.reuse_preview_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.reuse_preview_artifact_name }}
+          run-id: ${{ inputs.reuse_preview_run_id }}
+          path: preview-reuse
+          github-token: ${{ github.token }}
+
+      - name: (Optional) Place reused preview into NPUCONVERT_DIR
+        if: ${{ inputs.reuse_preview_run_id != '' }}
+        run: |
+          set -euo pipefail
+          find preview-reuse -type f -name "data.pkl" -print -quit | xargs -I{} cp {} "$NPUCONVERT_DIR/data.pkl"
+          mkdir -p "$NPUCONVERT_DIR/images"
+          if compgen -G "preview-reuse/**/images/*.png" > /dev/null; then
+            find preview-reuse -type f -path "*/images/*.png" -exec cp -t "$NPUCONVERT_DIR/images" {} +
+          fi
+          test -f "$NPUCONVERT_DIR/data.pkl" || { echo "data.pkl not found in reused artifact."; exit 1; }
+          ls -l "$NPUCONVERT_DIR" || true
+
       - name: Download model from Civitai
         env:
           CIVITAI_API_KEY: ${{ secrets.CIVITAI_API_KEY }}
@@ -127,6 +158,7 @@ jobs:
           uv sync
           
       - name: Run (1) prepare_data.py
+        if: ${{ inputs.reuse_preview_run_id == '' }}
         run: |
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
