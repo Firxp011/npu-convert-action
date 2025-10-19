@@ -61,6 +61,11 @@ jobs:
           sudo docker builder prune --all --force || true
           df -h
 
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
       - name: Checkout (with LFS)
         uses: actions/checkout@v4
         with:
@@ -235,11 +240,42 @@ jobs:
         env:
           QNN_CXXFLAGS: "-Wno-c99-designator -w"
           QNN_CFLAGS: "-Wno-c99-designator -w"
+          ACTIONS_RUNNER_DEBUG: 'true'     # 額外 runner 診斷（可選）
         run: |
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
-          bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
+          mkdir -p logs
+      
+          # 輕量記憶體監控，留下 OOM 前最後幾秒（很小的檔）
+          nohup bash -c 'while true; do date; free -h; cat /proc/meminfo | head -n 10; sleep 5; done >> logs/memwatch.log 2>&1' &
+          echo $! > logs/memwatch.pid
+      
+          # ⬇️ 子行程跑主流程，主殼不會跟著死
+          ( bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}" ) &
+          MAIN_PID=$!
+      
+          wait $MAIN_PID
+          rc=$?
+      
+          # 關監控
+          if [ -f logs/memwatch.pid ]; then kill "$(cat logs/memwatch.pid)" || true; fi
+      
+          # 解析退出狀態 → 你就能分辨 timeout(124) / SIGKILL(137=多半 OOM) / SIGTERM(143)
+          if [ $rc -ne 0 ]; then
+            if [ $rc -eq 124 ]; then
+              echo "::error :: stopped by timeout (124)"
+            elif [ $rc -ge 128 ]; then
+              sig=$((rc-128))
+              echo "::error :: killed by signal $sig"
+            else
+              echo "::error :: exit code $rc"
+            fi
+            for f in logs/*.out logs/*.err logs/*.log; do
+              [ -f "$f" ] && { echo "===== tail $f ====="; tail -n 80 "$f"; }
+            done
+            exit $rc
+          fi
 
       - name: Upload QNN logs (always)
         if: always()
