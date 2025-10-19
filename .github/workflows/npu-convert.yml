@@ -56,23 +56,6 @@ jobs:
           unzip -q npuconvert.zip -d npuconvert
           echo "NPUCONVERT_DIR=$GITHUB_WORKSPACE/tools/npuconvert/npuconvert" >> $GITHUB_ENV
 
-      - name: Download model from Civitai
-        env:
-          CIVITAI_API_KEY: ${{ secrets.CIVITAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          VER_ID="${{ inputs.civitai_version_id }}"
-          [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
-          URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
-          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
-               -o "${{ inputs.filename }}" \
-               --fail --retry 5 --retry-delay 5 \
-               "$URL_INPUT"
-          case "${{ inputs.filename }}" in
-            *.safetensors) ;;
-            *) echo "filename must end with .safetensors"; exit 1 ;;
-          esac
-
       - name: Download QNN SDK v2.28.0.241029
         run: |
           set -euo pipefail
@@ -91,14 +74,33 @@ jobs:
             exit 1
           fi
           echo "QNN_SDK_BIN=$(dirname "$BIN_FILE")" >> $GITHUB_ENV
+          echo "### QNN_SDK_BIN: $QNN_SDK_BIN ###" 
           sed -i 's|cd /data/qairt/2.28.0.241029/bin|cd "$QNN_SDK_BIN"|' "$NPUCONVERT_DIR/scripts/convert_all.sh"
           if grep -q "^prompts\s*=" "$GITHUB_WORKSPACE/prompts.py"; then
             echo "### Replacing prompts block in prepare_data.py ###"
             PROMPTS_CONTENT=$(sed 's/[&/\]/\\&/g' "$GITHUB_WORKSPACE/prompts.py")
             sed -i '/^prompts\s*=\s*\[/,/^]/c\'"$PROMPTS_CONTENT" "$NPUCONVERT_DIR/prepare_data.py"
+            echo "### PROMPTS_CONTENT: $PROMPTS_CONTENT ###"
           else
             echo "### Skipping replacement ###"
           fi
+
+      - name: Download model from Civitai
+        env:
+          CIVITAI_API_KEY: ${{ secrets.CIVITAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          VER_ID="${{ inputs.civitai_version_id }}"
+          [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
+          URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
+               -o "${{ inputs.filename }}" \
+               --fail --retry 5 --retry-delay 5 \
+               "$URL_INPUT"
+          case "${{ inputs.filename }}" in
+            *.safetensors) ;;
+            *) echo "filename must end with .safetensors"; exit 1 ;;
+          esac
 
       - name: Setup Python env with uv
         run: |
