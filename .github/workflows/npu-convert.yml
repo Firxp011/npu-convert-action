@@ -54,7 +54,7 @@ jobs:
           cd tools
           curl -L -o npuconvert.zip "https://chino.icu/local-dream/npuconvert.zip"
           unzip -q npuconvert.zip -d npuconvert
-          echo "NPUCONVERT_DIR=$GITHUB_WORKSPACE/tools/npuconvert" >> $GITHUB_ENV
+          echo "NPUCONVERT_DIR=$GITHUB_WORKSPACE/tools/npuconvert/npuconvert" >> $GITHUB_ENV
 
       - name: Download model from Civitai
         env:
