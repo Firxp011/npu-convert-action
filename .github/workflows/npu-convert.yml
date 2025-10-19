@@ -125,13 +125,36 @@ jobs:
         if: ${{ inputs.reuse_preview_run_id != '' }}
         run: |
           set -euo pipefail
-          find preview-reuse -type f -name "data.pkl" -print -quit | xargs -I{} cp {} "$NPUCONVERT_DIR/data.pkl"
-          mkdir -p "$NPUCONVERT_DIR/images"
-          if compgen -G "preview-reuse/**/images/*.png" > /dev/null; then
-            find preview-reuse -type f -path "*/images/*.png" -exec cp -t "$NPUCONVERT_DIR/images" {} +
+          shopt -s globstar nullglob
+      
+          SRC_DIR="preview-reuse"
+      
+          # 1) data.pkl
+          pkls=("$SRC_DIR"/**/data.pkl)
+          if [ ${#pkls[@]} -eq 0 ]; then
+            echo "::error :: data.pkl not found in reused artifact"
+            exit 1
           fi
-          test -f "$NPUCONVERT_DIR/data.pkl" || { echo "data.pkl not found in reused artifact."; exit 1; }
-          ls -l "$NPUCONVERT_DIR" || true
+          cp "${pkls[0]}" "$NPUCONVERT_DIR/data.pkl"
+      
+          # 2) images/*.png
+          mkdir -p "$NPUCONVERT_DIR/images"
+          copied=0
+          for f in "$SRC_DIR"/**/images/*.png; do
+            cp "$f" "$NPUCONVERT_DIR/images/"
+            copied=$((copied+1))
+          done
+          echo "Copied $copied preview images into \$NPUCONVERT_DIR/images"
+      
+          test -f "$NPUCONVERT_DIR/data.pkl" || { echo "::error :: data.pkl missing"; exit 1; }
+          if [ "$copied" -eq 0 ]; then
+            echo "::error :: No images were copied. VAE encoder input list will be empty."
+            exit 1
+          fi
+      
+          echo "images sample:"
+          ls -lh "$NPUCONVERT_DIR/images" | head -n 10
+
 
       - name: Download model from Civitai
         env:
