@@ -117,13 +117,10 @@ jobs:
           source .venv/bin/activate
           python prepare_data.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
           echo "### Sample preview images ###" >> $GITHUB_STEP_SUMMARY
-          count=0
           for img in "${{ env.NPUCONVERT_DIR }}"/images/*.png; do
             [ -e "$img" ] || continue
             b64=$(base64 -w0 "$img")
             echo "<img src=\"data:image/png;base64,$b64\" width=\"160\" style=\"margin:4px\" />" >> $GITHUB_STEP_SUMMARY
-            count=$((count+1))
-            [ $count -ge 6 ] && break
           done
 
       - name: Run (2) gen_quant_data.py
