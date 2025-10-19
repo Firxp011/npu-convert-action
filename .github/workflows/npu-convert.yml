@@ -75,27 +75,16 @@ jobs:
             *) echo "filename must end with .safetensors"; exit 1 ;;
           esac
 
-      - name: (Optional) Show downloaded file info
-        run: |
-          ls -lh "${{ inputs.filename }}" || true
-
-      - name: Download QNN SDK v2.28
-        env:
-          QNN_SDK_URL: ${{ secrets.QNN_SDK_URL }}
+      - name: Download QNN SDK v2.28.0.241029
         run: |
           mkdir -p $GITHUB_WORKSPACE/qnn_sdk && cd $GITHUB_WORKSPACE/qnn_sdk
-          if [ -n "$QNN_SDK_URL" ]; then
-            curl -L -o qnn.zip "$QNN_SDK_URL"
-          else
-            curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip" || true
-          fi
+          curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip" || true
           unzip -q qnn.zip || true
-          ROOTDIR=$(ls -1 | head -n 1)
-          if [ -d "$ROOTDIR" ]; then
-            echo "QNN_SDK_ROOT=$GITHUB_WORKSPACE/qnn_sdk/$ROOTDIR" >> $GITHUB_ENV
-          else
-            echo "QNN_SDK_ROOT=$GITHUB_WORKSPACE/qnn_sdk" >> $GITHUB_ENV
-          fi
+          
+      - name: Fix npuconvert path and customize
+        run: |
+          echo "QNN_SDK_BIN=$GITHUB_WORKSPACE/qnn_sdk/v2.28.0.241029/qairt/2.28.0.241029/bin" >> $GITHUB_ENV
+          sed -i 's|cd /data/qairt/2.28.0.241029/bin|cd "$QNN_SDK_BIN"|' "$NPUCONVERT_DIR/scripts/convert_all.sh"
 
       - name: Setup Python env with uv
         run: |
@@ -103,20 +92,30 @@ jobs:
           uv venv -p 3.10
           source .venv/bin/activate
           uv sync
-
-      - name: Run conversion
-        env:
-          QNN_SDK_ROOT: ${{ env.QNN_SDK_ROOT }}
+          
+      - name: Run (1) prepare_data.py
         run: |
-          set -eux
-          cd "$NPUCONVERT_DIR"
-          if grep -q "QNN_SDK_ROOT=" scripts/convert_all.sh; then
-            sed -i "s|^QNN_SDK_ROOT=.*|QNN_SDK_ROOT=\"${QNN_SDK_ROOT}\"|g" scripts/convert_all.sh || true
-          fi
-          source .venv/bin/activate
           python prepare_data.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
+          echo "### Sample preview images ###" >> $GITHUB_STEP_SUMMARY
+          count=0
+          for img in "${{ env.NPUCONVERT_DIR }}"/images/*.png; do
+            [ -e "$img" ] || continue
+            b64=$(base64 -w0 "$img")
+            echo "<img src=\"data:image/png;base64,$b64\" width=\"160\" style=\"margin:4px\" />" >> $GITHUB_STEP_SUMMARY
+            count=$((count+1))
+            [ $count -ge 6 ] && break
+          done
+
+      - name: Run (2) gen_quant_data.py
+        run: |
           python gen_quant_data.py
+
+      - name: Run (3) export_onnx.py
+        run: |
           python export_onnx.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
+
+      - name: Run (4) convert_all.sh
+        run: |
           bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
 
       - name: Package outputs
