@@ -30,6 +30,22 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     steps:
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/share/chromium || true
+          sudo rm -rf /opt/microsoft || true
+          sudo rm -rf /opt/google || true
+          sudo docker system prune --all --force || true
+          sudo docker builder prune --all --force || true
+          df -h
+
       - name: Checkout (with LFS)
         uses: actions/checkout@v4
         with:
@@ -121,16 +137,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: preview-images
-          path: ${{ env.NPUCONVERT_DIR }}/images/*.png
+          path: |
+            ${{ env.NPUCONVERT_DIR }}/data.pkl
+            ${{ env.NPUCONVERT_DIR }}/images/*.png
           if-no-files-found: ignore
-      
-      - name: Add note to summary
-        run: |
-          {
-            echo "### Sample preview images ###"
-            echo "- Images uploaded as an artifact: **preview-images**"
-            echo "- Download from the *Artifacts* section of this workflow run."
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run (2) gen_quant_data.py
         run: |
