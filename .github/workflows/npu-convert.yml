@@ -1,0 +1,141 @@
+name: NPU Model Conversion
+
+on:
+  workflow_dispatch:
+    inputs:
+      civitai_version_id:
+        description: "Civitai model *version* ID (e.g. 350144). Leave empty if you use civitai_download_url."
+        required: false
+        type: string
+      civitai_download_url:
+        description: "Full Civitai download URL (e.g. https://civitai.com/api/download/models/350144?...). Leave empty if you use version id."
+        required: false
+        type: string
+      filename:
+        description: "Save as (e.g. models/my.safetensors). Must end with .safetensors"
+        required: true
+        default: "models/model.safetensors"
+        type: string
+      clip_skip:
+        description: "CLIP skip"
+        required: true
+        default: "2"
+        type: choice
+        options: ["1", "2"]
+      min_soc:
+        description: "min | 8gen1 | 8gen2"
+        required: true
+        default: "8gen2"
+        type: choice
+        options: ["min", "8gen1", "8gen2"]
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Prepare folders
+        run: |
+          mkdir -p models tools
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip zip curl
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Download npuconvert scripts
+        run: |
+          cd tools
+          curl -L -o npuconvert.zip "https://chino.icu/local-dream/npuconvert.zip"
+          unzip -q npuconvert.zip -d npuconvert
+          echo "NPUCONVERT_DIR=$GITHUB_WORKSPACE/tools/npuconvert" >> $GITHUB_ENV
+
+      - name: Download model from Civitai
+        env:
+          CIVITAI_API_KEY: ${{ secrets.CIVITAI_API_KEY }}
+        run: |
+          set -eux
+          URL_INPUT="${{ inputs.civitai_download_url }}"
+          VER_ID="${{ inputs.civitai_version_id }}"
+          if [ -z "$URL_INPUT" ] && [ -z "$VER_ID" ]; then
+            echo "You must provide civitai_download_url or civitai_version_id"; exit 1
+          fi
+          if [ -z "$URL_INPUT" ]; then
+            URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+          fi
+          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
+               -o "${{ inputs.filename }}" \
+               --fail --retry 5 --retry-delay 5 \
+               "$URL_INPUT"
+          case "${{ inputs.filename }}" in
+            *.safetensors) ;;
+            *) echo "filename must end with .safetensors"; exit 1 ;;
+          esac
+
+      - name: (Optional) Show downloaded file info
+        run: |
+          ls -lh "${{ inputs.filename }}" || true
+
+      - name: Download QNN SDK v2.28
+        env:
+          QNN_SDK_URL: ${{ secrets.QNN_SDK_URL }}
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/qnn_sdk && cd $GITHUB_WORKSPACE/qnn_sdk
+          if [ -n "$QNN_SDK_URL" ]; then
+            curl -L -o qnn.zip "$QNN_SDK_URL"
+          else
+            curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip" || true
+          fi
+          unzip -q qnn.zip || true
+          ROOTDIR=$(ls -1 | head -n 1)
+          if [ -d "$ROOTDIR" ]; then
+            echo "QNN_SDK_ROOT=$GITHUB_WORKSPACE/qnn_sdk/$ROOTDIR" >> $GITHUB_ENV
+          else
+            echo "QNN_SDK_ROOT=$GITHUB_WORKSPACE/qnn_sdk" >> $GITHUB_ENV
+          fi
+
+      - name: Setup Python env with uv
+        run: |
+          cd "$NPUCONVERT_DIR"
+          uv venv -p 3.10
+          source .venv/bin/activate
+          uv sync
+
+      - name: Run conversion
+        env:
+          QNN_SDK_ROOT: ${{ env.QNN_SDK_ROOT }}
+        run: |
+          set -eux
+          cd "$NPUCONVERT_DIR"
+          if grep -q "QNN_SDK_ROOT=" scripts/convert_all.sh; then
+            sed -i "s|^QNN_SDK_ROOT=.*|QNN_SDK_ROOT=\"${QNN_SDK_ROOT}\"|g" scripts/convert_all.sh || true
+          fi
+          source .venv/bin/activate
+          python prepare_data.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
+          python gen_quant_data.py
+          python export_onnx.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
+          bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
+
+      - name: Package outputs
+        run: |
+          cd "$NPUCONVERT_DIR"
+          OUTDIR=$(ls -d output/qnn_models_* | tail -n 1)
+          test -d "$OUTDIR"
+          zip -r npu_models.zip "$OUTDIR"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npu_models
+          path: ${{ env.NPUCONVERT_DIR }}/npu_models.zip
+          if-no-files-found: error
