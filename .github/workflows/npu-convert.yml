@@ -84,8 +84,13 @@ jobs:
       - name: Fix npuconvert path and customize
         run: |
           set -euo pipefail
-          echo "QNN_SDK_BIN=$GITHUB_WORKSPACE/qnn_sdk/v2.28.0.241029/qairt/2.28.0.241029/bin" >> $GITHUB_ENV
-          test -f "$GITHUB_WORKSPACE/qnn_sdk/v2.28.0.241029/qairt/2.28.0.241029/bin/envsetup.sh" || { echo "QNN envsetup.sh not found"; exit 1; }
+          BIN_FILE=$(find "$GITHUB_WORKSPACE/qnn_sdk" -type f -name "envsetup.sh" -print -quit || true)
+          if [ -z "${BIN_FILE:-}" ]; then
+            echo "### QNN envsetup.sh not found. Listing qnn_sdk structure (maxdepth 3) ###"
+            find "$GITHUB_WORKSPACE/qnn_sdk" -maxdepth 3 -mindepth 1 -print
+            exit 1
+          fi
+          echo "QNN_SDK_BIN=$(dirname "$BIN_FILE")" >> $GITHUB_ENV
           sed -i 's|cd /data/qairt/2.28.0.241029/bin|cd "$QNN_SDK_BIN"|' "$NPUCONVERT_DIR/scripts/convert_all.sh"
           if grep -q "^prompts\s*=" "$GITHUB_WORKSPACE/prompts.py"; then
             echo "### Replacing prompts block in prepare_data.py ###"
