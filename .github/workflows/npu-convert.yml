@@ -39,6 +39,11 @@ jobs:
   convert:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      MAKEFLAGS: "-j1"
     steps:
       - name: Free up disk space
         run: |
@@ -111,6 +116,27 @@ jobs:
           else
             echo "### Skipping replacement ###"
           fi
+          
+      - name: Patch vae_decoder script (timeouts & logs)
+        run: |
+          set -euo pipefail
+          cd "$NPUCONVERT_DIR"
+
+          mkdir -p logs
+
+          # 1) 將 qnn-model-lib-generator 的 STDERR 收到檔案，並加 timeout 與 /usr/bin/time -v
+          #   原始行長得像：qnn-model-lib-generator -c ./vae_decoder/model.cpp -b ... -o ./qnn_vae_decoder
+          sed -i 's|qnn-model-lib-generator -c ./vae_decoder/model.cpp -b ./vae_decoder/model.bin -t x86_64-linux-clang -o ./qnn_vae_decoder|/usr/bin/time -v timeout 30m qnn-model-lib-generator -c ./vae_decoder/model.cpp -b ./vae_decoder/model.bin -t x86_64-linux-clang -o ./qnn_vae_decoder 2>> logs/vae_decoder_libgen.stderr|' scripts/convert_vae_decoder.sh
+
+          # 2) 將 qnn-context-binary-generator 包起來（timeout + time + stdbuf），並把 STDERR 收到檔案
+          #   原始行長得像：qnn-context-binary-generator --model ... --config_file "./htp_backend$SUFFIX.json"
+          sed -i 's|^qnn-context-binary-generator |/usr/bin/time -v timeout 45m stdbuf -oL -eL qnn-context-binary-generator |' scripts/convert_vae_decoder.sh
+          sed -i 's|--config_file "./htp_backend$SUFFIX.json"$|--config_file "./htp_backend$SUFFIX.json" 2>> logs/vae_decoder_context.stderr|' scripts/convert_vae_decoder.sh
+
+          # 3) 可選：嘗試抑制 clang 的 c99-designator 警告（若該 QNN 版支援）
+          echo 'export QNN_CXXFLAGS="${QNN_CXXFLAGS:--Wno-c99-designator -w}"' >> scripts/convert_vae_decoder.sh
+          echo 'export QNN_CFLAGS="${QNN_CFLAGS:--Wno-c99-designator -w}"' >> scripts/convert_vae_decoder.sh
+
 
       - name: (Optional) Download preview from previous run artifact
         if: ${{ inputs.reuse_preview_run_id != '' }}
@@ -211,12 +237,30 @@ jobs:
           source .venv/bin/activate
           python export_onnx.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
 
+      - name: Add shell tracing to convert_all.sh
+        run: |
+          set -euo pipefail
+          f="$NPUCONVERT_DIR/scripts/convert_all.sh"
+          # 在腳本最前面插入：嚴格模式 + 逐行 trace + 時間戳
+          sed -i '1s;^;set -Eeuo pipefail\nPS4="+ $(date \"+%F %T\") \${BASH_SOURCE##*/}:\${LINENO}: "\nset -x\n\n;' "$f"
+
+      
       - name: Run (4) convert_all.sh
         run: |
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
           bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
+
+      - name: Upload QNN logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qnn-logs
+          path: |
+            ${{ env.NPUCONVERT_DIR }}/logs/
+          if-no-files-found: warn
+
 
       - name: Package outputs
         run: |
