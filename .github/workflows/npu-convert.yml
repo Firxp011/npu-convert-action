@@ -4,12 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       civitai_version_id:
-        description: "Civitai model *version* ID (e.g. 350144). Leave empty if you use civitai_download_url."
-        required: false
-        type: string
-      civitai_download_url:
-        description: "Full Civitai download URL (e.g. https://civitai.com/api/download/models/350144?...). Leave empty if you use version id."
-        required: false
+        description: "Civitai modelVersionId (e.g. 90854). Can be found in URL bar."
+        required: true
         type: string
       filename:
         description: "Save as (e.g. models/my.safetensors). Must end with .safetensors"
@@ -65,14 +61,11 @@ jobs:
           CIVITAI_API_KEY: ${{ secrets.CIVITAI_API_KEY }}
         run: |
           set -eux
-          URL_INPUT="${{ inputs.civitai_download_url }}"
           VER_ID="${{ inputs.civitai_version_id }}"
-          if [ -z "$URL_INPUT" ] && [ -z "$VER_ID" ]; then
-            echo "You must provide civitai_download_url or civitai_version_id"; exit 1
+          if [ -z "$VER_ID" ]; then
+            echo "You must provide civitai modelVersionId."; exit 1
           fi
-          if [ -z "$URL_INPUT" ]; then
-            URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
-          fi
+          URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
           curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
                -o "${{ inputs.filename }}" \
                --fail --retry 5 --retry-delay 5 \
