@@ -236,14 +236,6 @@ jobs:
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
           python export_onnx.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
-
-      - name: Add shell tracing to convert_all.sh
-        run: |
-          set -euo pipefail
-          f="$NPUCONVERT_DIR/scripts/convert_all.sh"
-          # 在腳本最前面插入：嚴格模式 + 逐行 trace + 時間戳
-          sed -i '1s;^;set -Eeuo pipefail\nPS4="+ $(date \"+%F %T\") \${BASH_SOURCE##*/}:\${LINENO}: "\nset -x\n\n;' "$f"
-
       
       - name: Run (4) convert_all.sh
         run: |
