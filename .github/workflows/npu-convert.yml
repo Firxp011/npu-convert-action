@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       civitai_version_id:
-        description: "Civitai modelVersionId (e.g. 90854). Can be found in URL bar."
+        description: "Civitai modelVersionId (e.g., 90854). A secret named CIVITAI_API_KEY is required."
         required: true
         type: string
-      filename:
-        description: "Save as (e.g. models/my.safetensors). Must end with .safetensors"
-        required: true
-        default: "models/model.safetensors"
+      custom_prompts:
+        description: "Path to a custom prepare_data.py in GitHub root. Leave blank to use the server’s default prompts."
+        required: false
+        default: "prepare_data.py"
         type: string
       clip_skip:
         description: "CLIP skip"
@@ -25,7 +25,7 @@ on:
         type: choice
         options: ["min", "8gen1", "8gen2"]
       reuse_preview_run_id:
-        description: "Reuse preview-images artifact from this run-id (leave empty to regenerate)"
+        description: "GitHub Actions may crash when running tooltrains. You can reuse preview images from a previous run by entering its run ID (leave empty to regenerate)."
         required: false
         default: ""
         type: string
@@ -40,6 +40,19 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
     steps:
+    
+      - name: Check Server Performance
+        run: |
+          echo -e "Known CPU Models (descending order): 7763, 8370C, 8272CL, 8171M, E5-2673 \n"
+          echo "-------------------------- CPU Information --------------------------"
+          echo "Number of physical CPUs: $(cat /proc/cpuinfo | grep 'physical id' | sort | uniq | wc -l)"
+          echo -e "CPU core details: $(cat /proc/cpuinfo | grep 'name' | cut -f2 -d: | uniq -c) \n"
+          echo "-------------------------- Memory Information --------------------------"
+          echo "Installed memory details:"
+          echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+          echo "-------------------------- Disk Information --------------------------"
+          echo "Number of disks: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
       - name: Free up disk space
         run: |
           set -euo pipefail
@@ -54,9 +67,8 @@ jobs:
           sudo rm -rf /opt/google || true
           sudo docker system prune --all --force || true
           sudo docker builder prune --all --force || true
-          df -h
 
-      - name: Set Swap Space
+      - name: Set swap space
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 10
@@ -66,17 +78,13 @@ jobs:
         with:
           lfs: true
 
-      - name: Prepare folders
-        run: |
-          mkdir -p models tools
-
-      - name: Install deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip zip curl
-
       - name: Install uv
         run: |
+          mkdir -p models tools
+          
+          sudo apt-get update
+          sudo apt-get install -y unzip zip curl
+          
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
@@ -95,7 +103,7 @@ jobs:
           curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip"
           unzip -q qnn.zip
           
-      - name: Fix npuconvert path and customize
+      - name: Fix npu-convert path and customize
         run: |
           set -euo pipefail
           BIN_FILE=$(find "$GITHUB_WORKSPACE/qnn_sdk" -type f -name "envsetup.sh" -print -quit || true)
@@ -110,9 +118,9 @@ jobs:
           echo "QNN_SDK_BIN=$QNN_SDK_BIN" >> $GITHUB_ENV
           sed -i 's|cd /data/qairt/2.28.0.241029/bin|cd "$QNN_SDK_BIN"|' "$NPUCONVERT_DIR/scripts/convert_all.sh"
           
-          if [ -f "$GITHUB_WORKSPACE/prepare_data.py" ]; then
+          if [[ -n "${{ inputs.custom_prompts }}" ]]; then
             echo "### Overriding prepare_data.py with custom version ###"
-            cp "$GITHUB_WORKSPACE/prepare_data.py" "$NPUCONVERT_DIR/prepare_data.py"
+            cp "$GITHUB_WORKSPACE/${{ inputs.custom_prompts }}" "$NPUCONVERT_DIR/prepare_data.py"
           else
             echo "### Skipping replacement ###"
           fi
@@ -170,16 +178,13 @@ jobs:
           [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
           URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
           curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
-               -o "${{ inputs.filename }}" \
+               -o "models/model.safetensors" \
                --fail --retry 5 --retry-delay 5 \
                "$URL_INPUT"
-          case "${{ inputs.filename }}" in
-            *.safetensors) ;;
-            *) echo "filename must end with .safetensors"; exit 1 ;;
-          esac
 
       - name: Setup Python env with uv
         run: |
+          df -h
           cd "$NPUCONVERT_DIR"
           uv venv -p 3.10
           source .venv/bin/activate
@@ -191,7 +196,7 @@ jobs:
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
-          python prepare_data.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
+          python prepare_data.py --model_path "$GITHUB_WORKSPACE/models/model.safetensors" --clip_skip "${{ inputs.clip_skip }}"
 
       - name: Upload preview images
         uses: actions/upload-artifact@v4
@@ -214,69 +219,22 @@ jobs:
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
-          python export_onnx.py --model_path "$GITHUB_WORKSPACE/${{ inputs.filename }}" --clip_skip "${{ inputs.clip_skip }}"
+          python export_onnx.py --model_path "$GITHUB_WORKSPACE/models/model.safetensors" --clip_skip "${{ inputs.clip_skip }}"
       
       - name: Run (4) convert_all.sh
         env:
           QNN_CXXFLAGS: "-Wno-c99-designator -w"
           QNN_CFLAGS: "-Wno-c99-designator -w"
-          ACTIONS_RUNNER_DEBUG: 'true'     # 額外 runner 診斷（可選）
+          ACTIONS_RUNNER_DEBUG: 'true'
         run: |
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
           source .venv/bin/activate
-          mkdir -p logs
-      
-          # 輕量記憶體監控，留下 OOM 前最後幾秒（很小的檔）
-          nohup bash -c 'while true; do date; free -h; cat /proc/meminfo | head -n 10; sleep 5; done >> logs/memwatch.log 2>&1' &
-          echo $! > logs/memwatch.pid
-      
-          # ⬇️ 子行程跑主流程，主殼不會跟著死
-          ( bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}" ) &
-          MAIN_PID=$!
-      
-          wait $MAIN_PID
-          rc=$?
-      
-          # 關監控
-          if [ -f logs/memwatch.pid ]; then kill "$(cat logs/memwatch.pid)" || true; fi
-      
-          # 解析退出狀態 → 你就能分辨 timeout(124) / SIGKILL(137=多半 OOM) / SIGTERM(143)
-          if [ $rc -ne 0 ]; then
-            if [ $rc -eq 124 ]; then
-              echo "::error :: stopped by timeout (124)"
-            elif [ $rc -ge 128 ]; then
-              sig=$((rc-128))
-              echo "::error :: killed by signal $sig"
-            else
-              echo "::error :: exit code $rc"
-            fi
-            for f in logs/*.out logs/*.err logs/*.log; do
-              [ -f "$f" ] && { echo "===== tail $f ====="; tail -n 80 "$f"; }
-            done
-            exit $rc
-          fi
-
-      - name: Upload QNN logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qnn-logs
-          path: |
-            ${{ env.NPUCONVERT_DIR }}/logs/
-          if-no-files-found: warn
-
-
-      - name: Package outputs
-        run: |
-          cd "$NPUCONVERT_DIR"
-          OUTDIR=$(ls -d output/qnn_models_* | tail -n 1)
-          test -d "$OUTDIR"
-          zip -r npu_models.zip "$OUTDIR"
+          bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: npu_models
-          path: ${{ env.NPUCONVERT_DIR }}/npu_models.zip
+          name: custom-npu-model
+          path: ${{ env.NPUCONVERT_DIR }}/output/
           if-no-files-found: error
