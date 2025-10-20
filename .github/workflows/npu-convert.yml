@@ -21,7 +21,7 @@ on:
       min_soc:
         description: "min | 8gen1 | 8gen2"
         required: true
-        default: "8gen2"
+        default: "min"
         type: choice
         options: ["min", "8gen1", "8gen2"]
       reuse_preview_run_id:
@@ -39,11 +39,6 @@ jobs:
   convert:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-    env:
-      OMP_NUM_THREADS: "1"
-      OPENBLAS_NUM_THREADS: "1"
-      MKL_NUM_THREADS: "1"
-      MAKEFLAGS: "-j1"
     steps:
       - name: Free up disk space
         run: |
@@ -121,21 +116,6 @@ jobs:
           else
             echo "### Skipping replacement ###"
           fi
-          
-      - name: Patch vae_decoder script (timeouts & logs)
-        run: |
-          set -euo pipefail
-          cd "$NPUCONVERT_DIR"
-          mkdir -p logs
-      
-          # 1) 包 qnn-model-lib-generator，加 timeout + /usr/bin/time，並接 STDERR 到檔案
-          sed -i 's|qnn-model-lib-generator -c ./vae_decoder/model.cpp -b ./vae_decoder/model.bin -t x86_64-linux-clang -o ./qnn_vae_decoder|/usr/bin/time -v timeout 30m qnn-model-lib-generator -c ./vae_decoder/model.cpp -b ./vae_decoder/model.bin -t x86_64-linux-clang -o ./qnn_vae_decoder 2>> logs/vae_decoder_libgen.stderr|' scripts/convert_vae_decoder.sh
-      
-          # 2) 包 qnn-context-binary-generator（time + timeout + stdbuf）
-          sed -i 's|^qnn-context-binary-generator |/usr/bin/time -v timeout 45m stdbuf -oL -eL qnn-context-binary-generator |' scripts/convert_vae_decoder.sh
-      
-          # 3) 在 --config_file 後面插入 STDERR 重導，但保留行尾其餘內容（更穩）
-          sed -i 's|\(--config_file "./htp_backend\$SUFFIX.json"\)\(.*\)$|\1 2>> logs/vae_decoder_context.stderr\2|' scripts/convert_vae_decoder.sh
 
       - name: (Optional) Download preview from previous run artifact
         if: ${{ inputs.reuse_preview_run_id != '' }}
