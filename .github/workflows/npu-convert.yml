@@ -222,10 +222,6 @@ jobs:
           python export_onnx.py --model_path "$GITHUB_WORKSPACE/models/model.safetensors" --clip_skip "${{ inputs.clip_skip }}"
       
       - name: Run (4) convert_all.sh
-        env:
-          QNN_CXXFLAGS: "-Wno-c99-designator -w"
-          QNN_CFLAGS: "-Wno-c99-designator -w"
-          ACTIONS_RUNNER_DEBUG: 'true'
         run: |
           set -euo pipefail
           cd "$NPUCONVERT_DIR"
