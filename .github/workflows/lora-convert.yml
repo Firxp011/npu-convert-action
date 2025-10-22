@@ -35,11 +35,11 @@ on:
         default: "preview-images"
         type: string
       lora_model_1:
-        description: Model 1 from Civitai URL
+        description: Model 1 from Civitai modelVersionId (e.g., 90854)
         required: true
         type: string
       lora_model_2:
-        description: Model 2 from Civitai URL (optional)
+        description: Model 2 from Civitai modelVersionId (e.g., 90854) (optional)
         required: false
         type: string
 
