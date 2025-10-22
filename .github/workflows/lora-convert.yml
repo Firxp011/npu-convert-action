@@ -1,0 +1,314 @@
+name: LoRA Model Conversion
+
+on:
+  workflow_dispatch:
+    inputs:
+      civitai_version_id:
+        description: "Civitai modelVersionId (e.g., 90854). A secret named CIVITAI_API_KEY is required."
+        required: true
+        type: string
+      custom_prompts:
+        description: "Path to a custom prepare_data.py in GitHub root. Leave blank to use the server’s default prompts."
+        required: false
+        default: "prepare_data.py"
+        type: string
+      clip_skip:
+        description: "CLIP skip"
+        required: true
+        default: "2"
+        type: choice
+        options: ["1", "2"]
+      min_soc:
+        description: "min | 8gen1 | 8gen2"
+        required: true
+        default: "min"
+        type: choice
+        options: ["min", "8gen1", "8gen2"]
+      reuse_preview_run_id:
+        description: "GitHub Actions may crash when running tooltrains. You can reuse preview images from a previous run by entering its run ID (leave empty to regenerate)."
+        required: false
+        default: ""
+        type: string
+      reuse_preview_artifact_name:
+        description: "Artifact name to reuse (usually 'preview-images')"
+        required: false
+        default: "preview-images"
+        type: string
+      lora_model_1:
+        description: Model 1 from Civitai URL
+        required: true
+        type: string
+      lora_model_2:
+        description: Model 2 from Civitai URL (optional)
+        required: false
+        type: string
+
+
+jobs:
+  convert:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+    
+      - name: Check Server Performance
+        run: |
+          echo -e "Known CPU Models (descending order): 7763, 8370C, 8272CL, 8171M, E5-2673 \n"
+          echo "-------------------------- CPU Information --------------------------"
+          echo "Number of physical CPUs: $(cat /proc/cpuinfo | grep 'physical id' | sort | uniq | wc -l)"
+          echo -e "CPU core details: $(cat /proc/cpuinfo | grep 'name' | cut -f2 -d: | uniq -c) \n"
+          echo "-------------------------- Memory Information --------------------------"
+          echo "Installed memory details:"
+          echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+          echo "-------------------------- Disk Information --------------------------"
+          echo "Number of disks: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/share/chromium || true
+          sudo rm -rf /opt/microsoft || true
+          sudo rm -rf /opt/google || true
+          sudo docker system prune --all --force || true
+          sudo docker builder prune --all --force || true
+
+      - name: Set swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 10
+
+      - name: Checkout (with LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install uv
+        run: |
+          mkdir -p models tools
+          
+          
+          sudo apt-get update
+          sudo apt-get install -y unzip zip curl
+          
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Download npuconvert scripts
+        run: |
+          cd tools
+          curl -L -o npuconvert.zip "https://chino.icu/local-dream/npuconvert.zip"
+          unzip -q npuconvert.zip -d npuconvert
+          echo "NPUCONVERT_DIR=$GITHUB_WORKSPACE/tools/npuconvert/npuconvert" >> $GITHUB_ENV
+
+      - name: Download QNN SDK v2.28.0.241029
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/qnn_sdk"
+          cd "$GITHUB_WORKSPACE/qnn_sdk"
+          curl -L -o qnn.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/qualcomm_neural_processing_sdk/v2.28.0.241029.zip"
+          unzip -q qnn.zip
+          
+      - name: Download Merge Diffusion Tool
+        run: |
+          git clone https://github.com/itspranavajay/Merge-Diffusion-Tool.git "$GITHUB_WORKSPACE/tools/merge-diffusion-tool"
+
+      - name: Fix npu-convert path and customize
+        run: |
+          set -euo pipefail
+          BIN_FILE=$(find "$GITHUB_WORKSPACE/qnn_sdk" -type f -name "envsetup.sh" -print -quit || true)
+          if [ -z "${BIN_FILE:-}" ]; then
+            echo "### QNN envsetup.sh not found. Listing qnn_sdk structure ###"
+            find "$GITHUB_WORKSPACE/qnn_sdk" -maxdepth 3 -mindepth 1 -print
+            exit 1
+          fi
+          
+          QNN_SDK_BIN="$(dirname "$BIN_FILE")"
+          echo "### QNN_SDK_BIN: $QNN_SDK_BIN ###" 
+          echo "QNN_SDK_BIN=$QNN_SDK_BIN" >> $GITHUB_ENV
+          sed -i 's|cd /data/qairt/2.28.0.241029/bin|cd "$QNN_SDK_BIN"|' "$NPUCONVERT_DIR/scripts/convert_all.sh"
+          
+          if [[ -n "${{ inputs.custom_prompts }}" ]]; then
+            echo "### Overriding prepare_data.py with custom version ###"
+            cp "$GITHUB_WORKSPACE/${{ inputs.custom_prompts }}" "$NPUCONVERT_DIR/prepare_data.py"
+          else
+            echo "### Skipping replacement ###"
+          fi
+
+      - name: (Optional) Download preview from previous run artifact
+        if: ${{ inputs.reuse_preview_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.reuse_preview_artifact_name }}
+          run-id: ${{ inputs.reuse_preview_run_id }}
+          path: preview-reuse
+          github-token: ${{ github.token }}
+
+      - name: (Optional) Place reused preview into NPUCONVERT_DIR
+        if: ${{ inputs.reuse_preview_run_id != '' }}
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+      
+          SRC_DIR="preview-reuse"
+      
+          # 1) data.pkl
+          pkls=("$SRC_DIR"/**/data.pkl)
+          if [ ${#pkls[@]} -eq 0 ]; then
+            echo "::error :: data.pkl not found in reused artifact"
+            exit 1
+          fi
+          cp "${pkls[0]}" "$NPUCONVERT_DIR/data.pkl"
+      
+          # 2) images/*.png
+          mkdir -p "$NPUCONVERT_DIR/images"
+          copied=0
+          for f in "$SRC_DIR"/**/images/*.png; do
+            cp "$f" "$NPUCONVERT_DIR/images/"
+            copied=$((copied+1))
+          done
+          echo "Copied $copied preview images into \$NPUCONVERT_DIR/images"
+      
+          test -f "$NPUCONVERT_DIR/data.pkl" || { echo "::error :: data.pkl missing"; exit 1; }
+          if [ "$copied" -eq 0 ]; then
+            echo "::error :: No images were copied. VAE encoder input list will be empty."
+            exit 1
+          fi
+      
+          echo "images sample:"
+          ls -lh "$NPUCONVERT_DIR/images" | head -n 10
+
+
+      - name: Download model from Civitai
+        env:
+          CIVITAI_API_KEY: ${{ secrets.CIVITAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          VER_ID="${{ inputs.civitai_version_id }}"
+          [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
+          URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
+               -o "models/model.safetensors" \
+               --fail --retry 5 --retry-delay 5 \
+               "$URL_INPUT"
+
+      - name: Download LoRA models
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/models/lora"
+          
+          VER_ID="${{ inputs.lora_model_1 }}"
+          echo "Downloading LoRA model 1 from ${{ inputs.lora_model_1 }}"
+          [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
+          URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
+               -o "$GITHUB_WORKSPACE/models/lora/lora1.safetensors" \
+               --fail --retry 5 --retry-delay 5 \
+               "$URL_INPUT"
+          
+          if [ -n "${{ inputs.lora_model_2 }}" ]; then
+            echo "Downloading LoRA model 2 from ${{ inputs.lora_model_2 }}"
+            [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
+            URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+            curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
+                -o "$GITHUB_WORKSPACE/models/lora/lora2.safetensors" \
+                --fail --retry 5 --retry-delay 5 \
+                "$URL_INPUT"
+          else
+            echo "No LoRA model 2 URL provided, skipping download."
+          fi
+
+      - name: Merge two LoRA into one LoRA model (if LoRA 2 provided)
+        if: ${{ inputs.lora_model_2 != '' }}
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/tools/merge-diffusion-tool/main.py" \
+            --operation merge_loras --model1 "$GITHUB_WORKSPACE/models/lora/lora1.safetensors" \
+            --model2 "$GITHUB_WORKSPACE/models/lora/lora2.safetensors" \
+            --output "$GITHUB_WORKSPACE/models/lora/merged_lora.safetensors" \
+            --alpha 1.0
+      
+      - name: Merged "merged_lora" into base model (if merged_lora.safetensors provided)
+        if: ${{ inputs.lora_model_2 != '' }}
+        run: |
+          set -euo pipefail
+          python "$GITHUB_WORKSPACE/tools/merge-diffusion-tool/main.py" \
+            --operation merge_lora_checkpoint --model1 "$GITHUB_WORKSPACE/models/lora/merged_lora.safetensors" \
+            --model2 "$GITHUB_WORKSPACE/models/model.safetensors" \
+            --output "$GITHUB_WORKSPACE/models/model_with_lora.safetensors" \
+            --merge_weight 1.0
+          
+          mv "$GITHUB_WORKSPACE/models/model_with_lora.safetensors" "$GITHUB_WORKSPACE/models/model.safetensors"
+      
+      - name: Merged LoRA_1 into base model (skip if merged_lora provided)
+        run: |
+          set -euo pipefail
+          if [ -f "$GITHUB_WORKSPACE/models/lora/merged_lora.safetensors" ]; then
+            echo "Merged LoRA model already created, skipping LoRA_1 merge."
+          else
+            echo "Merging LoRA model 1 into base model."
+            python "$GITHUB_WORKSPACE/tools/merge-diffusion-tool/main.py" \
+              --operation merge_lora_checkpoint --model1 "$GITHUB_WORKSPACE/models/lora/lora1.safetensors" \
+              --model2 "$GITHUB_WORKSPACE/models/model.safetensors" \
+              --output_model "$GITHUB_WORKSPACE/models/model_with_lora.safetensors" \
+              --merge_weight 1.0
+          
+            mv "$GITHUB_WORKSPACE/models/model_with_lora.safetensors" "$GITHUB_WORKSPACE/models/model.safetensors"
+          fi
+
+      - name: Setup Python env with uv
+        run: |
+          df -h
+          cd "$NPUCONVERT_DIR"
+          uv venv -p 3.10
+          source .venv/bin/activate
+          uv sync
+          
+      - name: Run (1) prepare_data.py
+        if: ${{ inputs.reuse_preview_run_id == '' }}
+        run: |
+          set -euo pipefail
+          cd "$NPUCONVERT_DIR"
+          source .venv/bin/activate
+          python prepare_data.py --model_path "$GITHUB_WORKSPACE/models/model.safetensors" --clip_skip "${{ inputs.clip_skip }}"
+
+      - name: Upload preview images
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-images
+          path: |
+            ${{ env.NPUCONVERT_DIR }}/data.pkl
+            ${{ env.NPUCONVERT_DIR }}/images/*.png
+          if-no-files-found: ignore
+
+      - name: Run (2) gen_quant_data.py
+        run: |
+          set -euo pipefail
+          cd "$NPUCONVERT_DIR"
+          source .venv/bin/activate
+          python gen_quant_data.py
+
+      - name: Run (3) export_onnx.py
+        run: |
+          set -euo pipefail
+          cd "$NPUCONVERT_DIR"
+          source .venv/bin/activate
+          python export_onnx.py --model_path "$GITHUB_WORKSPACE/models/model.safetensors" --clip_skip "${{ inputs.clip_skip }}"
+      
+      - name: Run (4) convert_all.sh
+        run: |
+          set -euo pipefail
+          cd "$NPUCONVERT_DIR"
+          source .venv/bin/activate
+          bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-npu-model-${{ inputs.civitai_version_id }}-${{ inputs.min_soc }}
+          path: ${{ env.NPUCONVERT_DIR }}/output/
+          if-no-files-found: error
