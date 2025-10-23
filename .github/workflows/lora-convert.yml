@@ -307,8 +307,15 @@ jobs:
           bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
 
       - name: Upload artifact
+        if: ${{ inputs.lora_model_2 != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: custom-npu-model-${{ inputs.civitai_version_id }}-${{ inputs.min_soc }}
+          name: custom-npu-model-${{ inputs.civitai_version_id }}-M1-${{ inputs.lora_model_1 }}-M2-${{ inputs.lora_model_2 }}-${{ inputs.min_soc }}
+          path: ${{ env.NPUCONVERT_DIR }}/output/
+          if-no-files-found: error
+        else
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-npu-model-${{ inputs.civitai_version_id }}-M1-${{ inputs.lora_model_1 }}-${{ inputs.min_soc }}
           path: ${{ env.NPUCONVERT_DIR }}/output/
           if-no-files-found: error
