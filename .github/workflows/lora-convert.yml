@@ -191,11 +191,8 @@ jobs:
           VER_ID="${{ inputs.civitai_version_id }}"
           [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
           URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
-          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
-               -o "models/model.safetensors" \
-               --fail --retry 5 --retry-delay 5 \
-               "$URL_INPUT"
-
+          curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" -o "models/model.safetensors" --fail --retry 5 --retry-delay 5 "$URL_INPUT"
+          
       - name: Download LoRA models
         run: |
           set -euo pipefail
