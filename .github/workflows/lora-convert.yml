@@ -201,19 +201,20 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/models/lora"
           
-          VER_ID="${{ inputs.lora_model_1 }}"
+          VER_ID_L1="${{ inputs.lora_model_1 }}"
           echo "Downloading LoRA model 1 from ${{ inputs.lora_model_1 }}"
-          [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
-          URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+          [ -n "$VER_ID_L1" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
+          URL_INPUT="https://civitai.com/api/download/models/${VER_ID_L1}"
           curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
                -o "$GITHUB_WORKSPACE/models/lora/lora1.safetensors" \
                --fail --retry 5 --retry-delay 5 \
                "$URL_INPUT"
           
           if [ -n "${{ inputs.lora_model_2 }}" ]; then
+            VER_ID_L2="${{ inputs.lora_model_2 }}"
             echo "Downloading LoRA model 2 from ${{ inputs.lora_model_2 }}"
-            [ -n "$VER_ID" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
-            URL_INPUT="https://civitai.com/api/download/models/${VER_ID}"
+            [ -n "$VER_ID_L2" ] || { echo "You must provide civitai modelVersionId."; exit 1; }
+            URL_INPUT="https://civitai.com/api/download/models/${VER_ID_L2}"
             curl -L -H "Authorization: Bearer ${CIVITAI_API_KEY}" \
                 -o "$GITHUB_WORKSPACE/models/lora/lora2.safetensors" \
                 --fail --retry 5 --retry-delay 5 \
@@ -306,14 +307,16 @@ jobs:
           source .venv/bin/activate
           bash scripts/convert_all.sh --min_soc "${{ inputs.min_soc }}"
 
-      - name: Upload artifact
+      - name: Upload artifact (dual LoRA)
         if: ${{ inputs.lora_model_2 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: custom-npu-model-${{ inputs.civitai_version_id }}-M1-${{ inputs.lora_model_1 }}-M2-${{ inputs.lora_model_2 }}-${{ inputs.min_soc }}
           path: ${{ env.NPUCONVERT_DIR }}/output/
           if-no-files-found: error
-        else
+
+      - name: Upload artifact (single LoRA)
+        if: ${{ inputs.lora_model_1 == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: custom-npu-model-${{ inputs.civitai_version_id }}-M1-${{ inputs.lora_model_1 }}-${{ inputs.min_soc }}
